@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Option Scanner</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark}
+body{margin:0;background:#0b0d12;color:#f5f7fb}.wrap{max-width:900px;margin:auto;padding:18px}
+h1{font-size:25px;margin:8px 0}.muted{color:#9da6b5;font-size:13px}.card{background:#151922;border:1px solid #272d39;border-radius:18px;padding:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px 12px;align-items:start}label{font-size:12px;color:#aeb6c4;display:flex;flex-direction:column;min-width:0;line-height:1.25}
+input,select,button{box-sizing:border-box;width:100%;padding:12px;margin-top:7px;border-radius:12px;border:1px solid #343c4b;background:#0f131b;color:white;font-size:16px}input,select{height:52px;min-width:0}
+button{font-weight:700;background:#f2f4f8;color:#101218}.row{display:flex;gap:8px}.pill{padding:6px 9px;border-radius:999px;background:#252b37;font-size:12px}
+.group h3{margin:0 0 5px}.contract{padding:10px 0;border-top:1px solid #292f3b}.contract:first-of-type{border-top:0}
+.big{font-size:20px;font-weight:700}.good{font-weight:700}.err{color:#ff9b9b;white-space:pre-wrap}.tabs button{background:#202632;color:white}.tabs button.on{background:#f2f4f8;color:#111}
+table{width:100%;border-collapse:collapse;font-size:12px}td,th{padding:7px 4px;border-bottom:1px solid #292f3b;text-align:right}th:first-child,td:first-child{text-align:left}
+@media(max-width:520px){.grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px 12px}.wrap{padding:12px}.card{padding:14px 12px}label{font-size:12px}input,select{height:54px;padding:10px;font-size:16px}}@media(max-width:360px){.grid{grid-template-columns:1fr}}
+</style>
+</head><body><div class="wrap">
+<h1>Option Scanner <span class="pill">v0.6</span></h1>
+<div class="muted">Сценарный сканер CALL/PUT. Приоритет = модельный результат в выбранном диапазоне, с фильтрами ликвидности.</div>
+
+<div class="card">
+<div class="row" style="align-items:center;justify-content:space-between">
+<b>★ Избранные тикеры</b><span class="muted">нажмите для выбора</span>
+</div>
+<div id="favorites" class="row" style="flex-wrap:wrap;margin-top:10px"></div>
+</div>
+<div class="card grid">
+<label>MarketData API token<input id="token" type="password" placeholder="Хранится только в браузере"></label>
+<label>Тикер
+<div class="row" style="margin-top:7px">
+<input id="ticker" value="NBIS" autocapitalize="characters" list="tickerList" style="margin-top:0">
+<button id="fav" type="button" aria-label="Добавить в избранное" title="Избранное" style="width:54px;min-width:54px;margin-top:0;padding:0;font-size:25px;background:#202632;color:white">☆</button>
+</div>
+<datalist id="tickerList"></datalist>
+</label>
+<label>Экспирация
+<select id="exp"><option value="">Авто — ближайшая доступная</option></select>
+</label>
+<label>Горизонт, дней<input id="days" type="number" value="7" min="0"></label>
+<label>Нижняя цена<input id="pmin" type="number" step=".01"></label>
+<label>Верхняя цена<input id="pmax" type="number" step=".01"></label>
+<label>Шаг цены<input id="pstep" type="number" value="5" step=".01"></label>
+<label>IV сценарий<select id="ivmode"><option value="0">Текущая IV</option><option value="-.20">IV −20%</option><option value=".20">IV +20%</option></select></label>
+<label>Мин. OI<input id="minoi" type="number" value="50"></label>
+<label>Макс. spread %<input id="maxspread" type="number" value="15"></label>
+</div>
+<button id="load">Загрузить и просканировать</button>
+<div id="status" class="muted" style="margin:10px 2px">Интерфейс загружен. Готов к запуску.</div>
+<div id="progress" class="card" style="display:none">
+  <div class="row" style="align-items:center;justify-content:space-between">
+    <b id="stage">Подготовка…</b><span id="timer" class="pill">0.0 c</span>
+  </div>
+  <div style="height:8px;background:#252b37;border-radius:999px;margin-top:12px;overflow:hidden">
+    <div id="bar" style="height:100%;width:8%;background:#f2f4f8;border-radius:999px;transition:width .25s"></div>
+  </div>
+  <div id="detail" class="muted" style="margin-top:9px">Запуск запроса…</div>
+</div>
+<div id="summary"></div>
+<div id="groups"></div>
+<div id="matrix"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+function storeGet(k,fallback=""){try{return localStorage.getItem(k)??fallback}catch(e){return fallback}}
+function storeSet(k,v){try{localStorage.setItem(k,v);return true}catch(e){return false}}
+$("token").value=storeGet("mdtoken","");
+$("token").onchange=()=>storeSet("mdtoken",$("token").value.trim());
+
+// Большой локальный список популярных/опционных тикеров для быстрого поиска.
+// Любой другой тикер также можно ввести вручную.
+const tickerUniverse = [
+"AAPL","ABBV","ABNB","AMD","AMZN","ARM","AVGO","BA","BABA","BAC","BIDU","BITO","BMY","C","CAT","CCL","COIN","CRM","CRWD","CVX",
+"DIS","DKNG","F","GOOG","GOOGL","GS","HOOD","IBM","INTC","IWM","JPM","KO","LCID","LLY","LMT","MARA","META","MSFT","MU","NFLX",
+"NIO","NBIS","NVDA","ORCL","PANW","PEP","PFE","PLTR","PYPL","QCOM","QQQ","RBLX","RIVN","ROKU","SBUX","SMCI","SOFI","SPY","T",
+"TGT","TSLA","TSM","UBER","UNH","V","WFC","WMT","XOM"
+];
+$("tickerList").innerHTML=tickerUniverse.map(t=>`<option value="${t}"></option>`).join("");
+let favs=[];
+try{favs=JSON.parse(storeGet("optionScannerFavs",'["NBIS"]'))}catch(e){favs=["NBIS"]}
+function saveFavs(){storeSet("optionScannerFavs",JSON.stringify(favs))}
+function renderFavs(){
+ const cur=$("ticker").value.trim().toUpperCase();
+ $("fav").textContent=favs.includes(cur)?"★":"☆";
+ $("fav").style.color=favs.includes(cur)?"#ffd866":"white";
+ $("favorites").innerHTML=favs.length?favs.map(t=>`<button type="button" class="favTicker" data-t="${t}" style="width:auto;margin:0;padding:8px 12px;background:#202632;color:white">${t}</button>`).join(""):'<span class="muted">Пока пусто — нажмите ☆ рядом с тикером.</span>';
+ document.querySelectorAll(".favTicker").forEach(b=>b.addEventListener("click",()=>{$("ticker").value=b.dataset.t;renderFavs()}));
+}
+$("ticker").addEventListener("input",renderFavs);
+$("fav").addEventListener("click",()=>{
+ let t=$("ticker").value.trim().toUpperCase(); if(!t)return;
+ if(favs.includes(t))favs=favs.filter(x=>x!==t);else favs.unshift(t);
+ saveFavs();renderFavs();
+});
+renderFavs();
+
+function normcdf(x){let t=1/(1+.2316419*Math.abs(x)),d=.3989423*Math.exp(-x*x/2),p=1-d*t*(.319381530+t*(-.356563782+t*(1.781477937+t*(-1.821255978+t*1.330274429))));return x>=0?p:1-p}
+function bs(S,K,T,v,call=true,r=.04){
+ if(T<=0)return Math.max(call?S-K:K-S,0);
+ let d1=(Math.log(S/K)+(r+.5*v*v)*T)/(v*Math.sqrt(T)),d2=d1-v*Math.sqrt(T);
+ return call?S*normcdf(d1)-K*Math.exp(-r*T)*normcdf(d2):K*Math.exp(-r*T)*normcdf(-d2)-S*normcdf(-d1)
+}
+async function getJSON(url){
+ const c=new AbortController(),tm=setTimeout(()=>c.abort(),15000);
+ try{
+   let r=await fetch(url,{signal:c.signal,cache:"no-store"});
+   if(!r.ok){
+     if(r.status===404)throw new Error("API вернул 404: для выбранного тикера/экспирации данных нет.");
+     if(r.status===401||r.status===403)throw new Error("API отклонил ключ или доступ к данным (HTTP "+r.status+").");
+     throw new Error("HTTP "+r.status);
+   }
+   let j=await r.json();
+   if(j.s && j.s!="ok")throw new Error(JSON.stringify(j));
+   return j;
+ }catch(e){
+   if(e.name==="AbortError")throw new Error("API не ответил за 15 секунд.");
+   if(String(e.message).includes("Failed to fetch"))throw new Error("iPhone заблокировал API-запрос из локального HTML (CORS/предпросмотр). Интерфейс работает, но для данных нужен запуск через HTTPS.");
+   throw e;
+ }finally{clearTimeout(tm)}
+}
+function rows(j){let n=(j.optionSymbol||[]).length,out=[];for(let i=0;i<n;i++){let o={};for(let k in j)o[k]=Array.isArray(j[k])?j[k][i]:j[k];out.push(o)}return out}
+async function loadExpirations(tic,tok){
+ const j=await getJSON(`https://api.marketdata.app/v1/options/expirations/${encodeURIComponent(tic)}/?token=${encodeURIComponent(tok)}`);
+ const exps=Array.isArray(j.expirations)?j.expirations:[];
+ if(!exps.length)throw new Error("Для "+tic+" не найдены доступные экспирации.");
+ const old=$("exp").value;
+ $("exp").innerHTML='<option value="">Авто — ближайшая доступная</option>'+exps.map(x=>`<option value="${x}">${x}</option>`).join("");
+ if(exps.includes(old))$("exp").value=old;
+ return exps;
+}
+function money(x){return isFinite(x)?"$"+x.toFixed(2):"—"} function pct(x){return isFinite(x)?x.toFixed(0)+"%":"—"}
+
+$("load").onclick=async()=>{
+ let started=performance.now(), tick=null;
+ const prog=(pct,stage,detail)=>{$("progress").style.display="block";$("bar").style.width=pct+"%";$("stage").textContent=stage;$("detail").textContent=detail||""};
+ try{
+  $("load").disabled=true;$("load").textContent="Идёт расчёт…";
+  tick=setInterval(()=>{$("timer").textContent=((performance.now()-started)/1000).toFixed(1)+" c"},100);
+  let tok=$("token").value.trim(),tic=$("ticker").value.trim().toUpperCase(); if(!tok)throw Error("Введите API token.");
+  storeSet("mdtoken",tok); prog(12,"1/4 · Котировка","Получаю текущую цену "+tic+"…");
+  let q=await getJSON(`https://api.marketdata.app/v1/stocks/quotes/${encodeURIComponent(tic)}/?token=${encodeURIComponent(tok)}`);
+  let spot=Number(q.mid?.[0]??q.last?.[0]); if(!spot)throw Error("Не удалось получить цену акции.");
+  if(!$("pmin").value)$("pmin").value=(spot*.75).toFixed(0); if(!$("pmax").value)$("pmax").value=(spot*1.25).toFixed(0);
+  prog(30,"2/5 · Экспирации","Получаю только реально существующие даты…");
+  let exps=await loadExpirations(tic,tok);
+  let chosen=$("exp").value || exps[0];
+  $("exp").value=chosen;
+  prog(48,"3/5 · Опционная цепочка","Загружаю CALL и PUT на "+chosen+"…");
+  let url=`https://api.marketdata.app/v1/options/chain/${encodeURIComponent(tic)}/?expiration=${encodeURIComponent(chosen)}&token=${encodeURIComponent(tok)}`;
+  let chain=rows(await getJSON(url)); if(!chain.length)throw Error("Цепочка опционов пуста для "+chosen+".");
+  prog(70,"4/5 · Фильтрация","Проверяю OI и bid/ask spread…");
+  prog(86,"5/5 · Моделирование","Перебираю страйки, цены и сценарии…");
+  await new Promise(r=>setTimeout(r,60)); scan(chain,spot,tic);
+  prog(100,"Готово","Сканирование завершено.");
+  $("status").textContent="Расчёт завершён за "+((performance.now()-started)/1000).toFixed(1)+" c";
+ }catch(e){
+   prog(100,"Ошибка","Запрос или расчёт не завершён.");
+   $("status").innerHTML='<span class="err">'+e.message+'</span>';
+ }finally{
+   if(tick)clearInterval(tick);$("timer").textContent=((performance.now()-started)/1000).toFixed(1)+" c";
+   $("load").disabled=false;$("load").textContent="Загрузить и просканировать";
+ }
+};
+
+function scan(chain,spot,tic){
+ let horizon=+$("days").value, shift=+$("ivmode").value, minOI=+$("minoi").value,maxSp=+$("maxspread").value;
+ let lo=+$("pmin").value,hi=+$("pmax").value,step=+$("pstep").value, prices=[];for(let p=lo;p<=hi+1e-9;p+=step)prices.push(p);
+ let scored=chain.map(o=>{
+   let entry=Number(o.mid??((o.bid+o.ask)/2)), spread=entry?100*(o.ask-o.bid)/entry:999;
+   let rem=Math.max(0,(Number(o.dte)-horizon)/365),iv=Math.max(.01,Number(o.iv)*(1+shift)),call=o.side==="call";
+   let vals=prices.map(S=>{let val=bs(S,+o.strike,rem,iv,call),pl=(val-entry)*100;return {S,val,pl,roi:entry?100*(val-entry)/entry:-999}});
+   let favorable=vals.filter(v=>call?v.S>=spot:v.S<=spot);
+   let avg=favorable.length?favorable.reduce((a,b)=>a+b.roi,0)/favorable.length:-999;
+   return {...o,entry,spread,vals,score:avg};
+ }).filter(o=>o.entry>0 && +o.openInterest>=minOI && o.spread<=maxSp);
+ let calls=scored.filter(o=>o.side==="call").sort((a,b)=>b.score-a.score), puts=scored.filter(o=>o.side==="put").sort((a,b)=>b.score-a.score);
+ $("status").textContent=`${tic} ${money(spot)} · ${chain.length} контрактов · после фильтров ${scored.length}`;
+ $("summary").innerHTML=`<div class="card"><span class="big">${tic} ${money(spot)}</span><div class="muted">Сценарии ${money(lo)}–${money(hi)}, через ${horizon} дн. · модель Black–Scholes</div></div>`;
+ let bands=[
+  ["📈 Умеренный рост",calls.filter(o=>+o.strike>=spot*.9 && +o.strike<=spot*1.1)],
+  ["🚀 Сильный рост",calls],
+  ["📉 Умеренное падение",puts.filter(o=>+o.strike>=spot*.9 && +o.strike<=spot*1.1)],
+  ["🔻 Сильное падение",puts]
+ ];
+ $("groups").innerHTML=bands.map(([name,a])=>group(name,a.slice(0,4),spot)).join("");
+ window._best=[...calls.slice(0,2),...puts.slice(0,2)]; renderMatrix(prices);
+}
+function group(name,a,spot){return `<div class="card group"><h3>${name}</h3>${a.length?a.map(o=>`<div class="contract"><b>${o.strike} ${o.side.toUpperCase()}</b> · вход ${money(o.entry)} <span class="pill">сценарный ROI ${pct(o.score)}</span><div class="muted">Δ ${Number(o.delta).toFixed(2)} · Θ ${Number(o.theta).toFixed(2)} · IV ${pct(100*o.iv)} · OI ${o.openInterest} · spread ${pct(o.spread)}</div></div>`).join(""):'<div class="muted">Нет контрактов после фильтров</div>'}</div>`}
+function renderMatrix(prices){
+ let a=window._best||[]; if(!a.length)return;
+ $("matrix").innerHTML=`<div class="card"><h3>Матрица приоритетных контрактов</h3><div style="overflow:auto"><table><tr><th>Цена</th>${a.map(o=>`<th>${o.strike}${o.side[0].toUpperCase()}</th>`).join("")}</tr>${prices.map((p,i)=>`<tr><td>${money(p)}</td>${a.map(o=>`<td>${pct(o.vals[i].roi)}</td>`).join("")}</tr>`).join("")}</table></div><div class="muted" style="margin-top:8px">ROI модельный, не прогноз и не гарантия результата. IV задаётся сценарием выше.</div></div>`
+}
+</script></body></html>
